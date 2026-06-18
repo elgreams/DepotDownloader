@@ -48,7 +48,7 @@ namespace DepotDownloader
 
         private sealed class DepotDownloadInfo(
             uint depotid, uint appId, ulong manifestId, string branch,
-            string installDir, byte[] depotKey)
+            string installDir, byte[] depotKey, uint dlcAppId)
         {
             public uint DepotId { get; } = depotid;
             public uint AppId { get; } = appId;
@@ -56,6 +56,7 @@ namespace DepotDownloader
             public string Branch { get; } = branch;
             public string InstallDir { get; } = installDir;
             public byte[] DepotKey { get; } = depotKey;
+            public uint DlcAppId { get; } = dlcAppId;
         }
 
         static bool CreateDirectories(uint depotId, uint depotVersion, out string installDir)
@@ -212,6 +213,20 @@ namespace DepotDownloader
                 return INVALID_APP_ID;
 
             return depotChild["depotfromapp"].AsUnsignedInteger();
+        }
+
+        static uint GetSteam3DepotDlcAppId(uint depotId, uint appId)
+        {
+            var depots = GetSteam3AppSection(appId, EAppInfoSection.Depots);
+            var depotChild = depots[depotId.ToString()];
+
+            if (depotChild == KeyValue.Invalid)
+                return INVALID_APP_ID;
+
+            if (depotChild["dlcappid"] == KeyValue.Invalid)
+                return INVALID_APP_ID;
+
+            return depotChild["dlcappid"].AsUnsignedInteger();
         }
 
         static async Task<ulong> GetSteam3DepotManifest(uint depotId, uint appId, string branch)
@@ -657,7 +672,9 @@ namespace DepotDownloader
                 }
             }
 
-            return new DepotDownloadInfo(depotId, containingAppId, manifestId, branch, installDir, depotKey);
+            var dlcAppId = GetSteam3DepotDlcAppId(depotId, appId);
+
+            return new DepotDownloadInfo(depotId, containingAppId, manifestId, branch, installDir, depotKey, dlcAppId);
         }
 
         private class ChunkMatch(DepotManifest.ChunkData oldChunk, DepotManifest.ChunkData newChunk)
@@ -1404,6 +1421,8 @@ namespace DepotDownloader
             sw.WriteLine($"Content Manifest for Depot {depot.DepotId} ");
             sw.WriteLine();
             sw.WriteLine($"Manifest ID / date     : {depot.ManifestId} / {manifest.CreationTime} ");
+            if (depot.DlcAppId != INVALID_APP_ID)
+                sw.WriteLine($"DLC App ID             : {depot.DlcAppId} ");
 
             var uniqueChunks = new HashSet<byte[]>(new ChunkIdComparer());
 
