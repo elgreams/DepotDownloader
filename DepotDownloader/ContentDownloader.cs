@@ -823,6 +823,9 @@ namespace DepotDownloader
             else
                 Console.WriteLine("Processing depot {0}", depot.DepotId);
 
+            if (depot.DlcAppId != INVALID_APP_ID)
+                Console.WriteLine("Depot {0} dlcappid {1}", depot.DepotId, depot.DlcAppId);
+
             DepotManifest oldManifest = null;
             DepotManifest newManifest = null;
             var configDir = Path.Combine(depot.InstallDir, CONFIG_DIR);
