@@ -257,6 +257,21 @@ namespace DepotDownloader
                 }
             }
 
+            // Fall back to the parent app name, qualified by oslist when present
+            var appName = GetAppName(appId);
+            if (!string.IsNullOrWhiteSpace(appName))
+            {
+                var depotConfig = depotChild["config"];
+                if (depotConfig != KeyValue.Invalid &&
+                    depotConfig["oslist"] != KeyValue.Invalid &&
+                    !string.IsNullOrWhiteSpace(depotConfig["oslist"].Value))
+                {
+                    return $"{appName} - {depotConfig["oslist"].Value}";
+                }
+
+                return appName;
+            }
+
             return null;
         }
 
