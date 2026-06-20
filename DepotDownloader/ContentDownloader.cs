@@ -48,7 +48,7 @@ namespace DepotDownloader
 
         private sealed class DepotDownloadInfo(
             uint depotid, uint appId, ulong manifestId, string branch,
-            string installDir, byte[] depotKey, uint dlcAppId)
+            string installDir, byte[] depotKey, uint dlcAppId, string depotName)
         {
             public uint DepotId { get; } = depotid;
             public uint AppId { get; } = appId;
@@ -57,6 +57,7 @@ namespace DepotDownloader
             public string InstallDir { get; } = installDir;
             public byte[] DepotKey { get; } = depotKey;
             public uint DlcAppId { get; } = dlcAppId;
+            public string DepotName { get; } = depotName;
         }
 
         static bool CreateDirectories(uint depotId, uint depotVersion, out string installDir)
@@ -227,6 +228,36 @@ namespace DepotDownloader
                 return INVALID_APP_ID;
 
             return depotChild["dlcappid"].AsUnsignedInteger();
+        }
+
+        static string GetSteam3DepotName(uint depotId, uint appId)
+        {
+            var depots = GetSteam3AppSection(appId, EAppInfoSection.Depots);
+            var depotChild = depots[depotId.ToString()];
+
+            if (depotChild == KeyValue.Invalid)
+                return null;
+
+            // Check if the depot section has an explicit name field
+            if (depotChild["name"] != KeyValue.Invalid &&
+                !string.IsNullOrWhiteSpace(depotChild["name"].Value))
+            {
+                return depotChild["name"].Value;
+            }
+
+            // For depots with a dlcappid, try to resolve the DLC app name
+            if (depotChild["dlcappid"] != KeyValue.Invalid)
+            {
+                var dlcAppId = depotChild["dlcappid"].AsUnsignedInteger();
+                if (dlcAppId != INVALID_APP_ID)
+                {
+                    var dlcName = GetAppName(dlcAppId);
+                    if (!string.IsNullOrWhiteSpace(dlcName))
+                        return dlcName;
+                }
+            }
+
+            return null;
         }
 
         static async Task<ulong> GetSteam3DepotManifest(uint depotId, uint appId, string branch)
@@ -673,8 +704,9 @@ namespace DepotDownloader
             }
 
             var dlcAppId = GetSteam3DepotDlcAppId(depotId, appId);
+            var depotName = GetSteam3DepotName(depotId, appId);
 
-            return new DepotDownloadInfo(depotId, containingAppId, manifestId, branch, installDir, depotKey, dlcAppId);
+            return new DepotDownloadInfo(depotId, containingAppId, manifestId, branch, installDir, depotKey, dlcAppId, depotName);
         }
 
         private class ChunkMatch(DepotManifest.ChunkData oldChunk, DepotManifest.ChunkData newChunk)
@@ -771,7 +803,10 @@ namespace DepotDownloader
         {
             var depotCounter = new DepotDownloadCounter();
 
-            Console.WriteLine("Processing depot {0}", depot.DepotId);
+            if (!string.IsNullOrEmpty(depot.DepotName))
+                Console.WriteLine("Processing depot {0} \"{1}\"", depot.DepotId, depot.DepotName);
+            else
+                Console.WriteLine("Processing depot {0}", depot.DepotId);
 
             DepotManifest oldManifest = null;
             DepotManifest newManifest = null;
@@ -1418,7 +1453,10 @@ namespace DepotDownloader
             var txtManifest = Path.Combine(depot.InstallDir, $"manifest_{depot.DepotId}_{depot.ManifestId}.txt");
             using var sw = new StreamWriter(txtManifest);
 
-            sw.WriteLine($"Content Manifest for Depot {depot.DepotId} ");
+            if (!string.IsNullOrEmpty(depot.DepotName))
+                sw.WriteLine($"Content Manifest for Depot {depot.DepotId} \"{depot.DepotName}\" ");
+            else
+                sw.WriteLine($"Content Manifest for Depot {depot.DepotId} ");
             sw.WriteLine();
             sw.WriteLine($"Manifest ID / date     : {depot.ManifestId} / {manifest.CreationTime} ");
             if (depot.DlcAppId != INVALID_APP_ID)
