@@ -69,6 +69,7 @@ namespace DepotDownloader
             ContentDownloader.Config.RememberPassword = HasParameter(args, "-remember-password");
             ContentDownloader.Config.UseQrCode = HasParameter(args, "-qr");
             ContentDownloader.Config.SkipAppConfirmation = HasParameter(args, "-no-mobile");
+            var clearStoredToken = HasParameter(args, "-clear-token");
 
             if (username == null)
             {
@@ -339,6 +340,16 @@ namespace DepotDownloader
                 }
 
                 #endregion
+            }
+
+            // OmniPacker passes -clear-token on the final queue job when the user
+            // did not opt into saving credentials. Earlier jobs still reuse the
+            // stored token (no Steam Guard re-prompt mid-queue); this removes it
+            // from disk once the queue is done so nothing is left behind.
+            if (clearStoredToken && username != null)
+            {
+                AccountSettingsStore.Instance.LoginTokens.Remove(username);
+                AccountSettingsStore.Save();
             }
 
             return 0;
