@@ -6,7 +6,6 @@ using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.IO;
 using System.IO.Compression;
-using System.IO.IsolatedStorage;
 using ProtoBuf;
 
 namespace DepotDownloader
@@ -42,18 +41,22 @@ namespace DepotDownloader
         }
 
         public static AccountSettingsStore Instance;
-        static readonly IsolatedStorageFile IsolatedStorage = IsolatedStorageFile.GetUserStoreForAssembly();
 
+        // The account store (containing the saved login/refresh token) is kept as
+        // a plain file at the given path rather than in .NET isolated storage, so
+        // the caller controls its location. OmniPacker points -config-dir at its
+        // own data folder, which lets the token travel with portable installs and
+        // keeps it out of the OS-specific isolated-storage hash directory.
         public static void LoadFromFile(string filename)
         {
             if (Loaded)
                 throw new Exception("Config already loaded");
 
-            if (IsolatedStorage.FileExists(filename))
+            if (File.Exists(filename))
             {
                 try
                 {
-                    using var fs = IsolatedStorage.OpenFile(filename, FileMode.Open, FileAccess.Read);
+                    using var fs = File.Open(filename, FileMode.Open, FileAccess.Read);
                     using var ds = new DeflateStream(fs, CompressionMode.Decompress);
                     Instance = Serializer.Deserialize<AccountSettingsStore>(ds);
                 }
@@ -78,7 +81,11 @@ namespace DepotDownloader
 
             try
             {
-                using var fs = IsolatedStorage.OpenFile(Instance.FileName, FileMode.Create, FileAccess.Write);
+                var directory = Path.GetDirectoryName(Instance.FileName);
+                if (!string.IsNullOrEmpty(directory))
+                    Directory.CreateDirectory(directory);
+
+                using var fs = File.Open(Instance.FileName, FileMode.Create, FileAccess.Write);
                 using var ds = new DeflateStream(fs, CompressionMode.Compress);
                 Serializer.Serialize(ds, Instance);
             }

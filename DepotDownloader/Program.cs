@@ -38,8 +38,6 @@ namespace DepotDownloader
 
             DebugLog.Enabled = false;
 
-            AccountSettingsStore.LoadFromFile("account.config");
-
             #region Common Options
 
             // Not using HasParameter because it is case insensitive
@@ -50,6 +48,18 @@ namespace DepotDownloader
             }
 
             consumedArgs = new bool[args.Length];
+
+            // -config-dir relocates the account store (account.config, holding the
+            // saved login/refresh token) to a caller-chosen directory. OmniPacker
+            // passes its own data folder so the token lives beside the app (and
+            // travels with portable installs) instead of in the OS-specific
+            // isolated-storage location. Without it, the store falls back to
+            // "account.config" in the current working directory.
+            var configDir = GetParameter<string>(args, "-config-dir");
+            var accountConfigPath = string.IsNullOrWhiteSpace(configDir)
+                ? "account.config"
+                : Path.Combine(configDir, "account.config");
+            AccountSettingsStore.LoadFromFile(accountConfigPath);
 
             if (HasParameter(args, "-debug"))
             {
