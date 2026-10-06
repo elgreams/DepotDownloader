@@ -12,6 +12,11 @@ namespace DepotDownloader
         public bool DownloadAllPlatforms { get; set; }
         public bool DownloadAllArchs { get; set; }
         public bool DownloadAllLanguages { get; set; }
+        public bool DownloadAllRealms { get; set; }
+        // Steam realm whose depots to download: "steamglobal" (default, what the
+        // global Steam client installs) or "steamchina". Depots without a realm
+        // are always included.
+        public string Realm { get; set; }
         public bool DownloadManifestOnly { get; set; }
         public string InstallDirectory { get; set; }
 

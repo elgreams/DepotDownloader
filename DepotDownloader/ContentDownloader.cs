@@ -26,6 +26,7 @@ namespace DepotDownloader
         public const uint INVALID_DEPOT_ID = uint.MaxValue;
         public const ulong INVALID_MANIFEST_ID = ulong.MaxValue;
         public const string DEFAULT_BRANCH = "public";
+        public const string DEFAULT_REALM = "steamglobal";
 
         public static DownloadConfig Config = new();
 
@@ -564,6 +565,12 @@ namespace DepotDownloader
             {
                 Console.WriteLine("Using app branch: '{0}'.", branch);
 
+                // Depots that passed every filter except the realm check, kept so an
+                // app that only ships other-realm depots still downloads something.
+                var realmSkippedDepotIds = new List<uint>();
+                // Whether any depot explicitly tagged with the requested realm passed.
+                var requestedRealmMatched = false;
+
                 if (depots != null)
                 {
                     foreach (var depotSection in depots.Children)
@@ -614,6 +621,26 @@ namespace DepotDownloader
                                     depotConfig["lowviolence"] != KeyValue.Invalid &&
                                     depotConfig["lowviolence"].AsBoolean())
                                     continue;
+
+                                // Some apps ship a separate depot per Steam realm
+                                // (e.g. a global and a Steam China Windows depot with
+                                // the same oslist). The Steam client only installs its
+                                // own realm's depots plus realm-less ones; without this
+                                // check both were downloaded and merged.
+                                if (!Config.DownloadAllRealms &&
+                                    depotConfig["realm"] != KeyValue.Invalid &&
+                                    !string.IsNullOrWhiteSpace(depotConfig["realm"].Value) &&
+                                    !string.Equals(depotConfig["realm"].Value, Config.Realm ?? DEFAULT_REALM, StringComparison.OrdinalIgnoreCase))
+                                {
+                                    Console.WriteLine("Skipping depot {0}: realm '{1}' (downloading realm '{2}').",
+                                        id, depotConfig["realm"].Value, Config.Realm ?? DEFAULT_REALM);
+                                    realmSkippedDepotIds.Add(id);
+                                    continue;
+                                }
+
+                                if (depotConfig["realm"] != KeyValue.Invalid &&
+                                    !string.IsNullOrWhiteSpace(depotConfig["realm"].Value))
+                                    requestedRealmMatched = true;
                             }
                         }
 
@@ -621,6 +648,20 @@ namespace DepotDownloader
 
                         if (!hasSpecificDepots)
                             depotManifestIds.Add((id, INVALID_MANIFEST_ID));
+                    }
+                }
+
+                // Fall back only when the requested realm has no depots of its own
+                // (e.g. a China-only app). Realm-less depots such as shared content
+                // don't count: they'd otherwise mask a missing game depot.
+                if (!hasSpecificDepots && !requestedRealmMatched && realmSkippedDepotIds.Count > 0)
+                {
+                    Console.WriteLine("No depots for realm '{0}'; using the {1} depot(s) from other realms instead.",
+                        Config.Realm ?? DEFAULT_REALM, realmSkippedDepotIds.Count);
+                    foreach (var skippedId in realmSkippedDepotIds)
+                    {
+                        depotIdsFound.Add(skippedId);
+                        depotManifestIds.Add((skippedId, INVALID_MANIFEST_ID));
                     }
                 }
 

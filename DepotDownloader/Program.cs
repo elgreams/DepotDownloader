@@ -295,6 +295,19 @@ namespace DepotDownloader
                     return 1;
                 }
 
+                ContentDownloader.Config.DownloadAllRealms = HasParameter(args, "-all-realms");
+                var realm = GetParameter<string>(args, "-realm");
+
+                if (ContentDownloader.Config.DownloadAllRealms && !string.IsNullOrEmpty(realm))
+                {
+                    Console.WriteLine("Error: Cannot specify -realm when -all-realms is specified.");
+                    return 1;
+                }
+
+                ContentDownloader.Config.Realm = string.IsNullOrWhiteSpace(realm)
+                    ? ContentDownloader.DEFAULT_REALM
+                    : realm.Trim().ToLowerInvariant();
+
                 var lv = HasParameter(args, "-lowviolence");
 
                 var depotManifestIds = new List<(uint, ulong)>();
@@ -529,6 +542,8 @@ namespace DepotDownloader
             Console.WriteLine("  -all-languages           - download all language-specific depots when -app is used.");
             Console.WriteLine("  -language <lang>         - the language for which to download the game (default: english)");
             Console.WriteLine("  -lowviolence             - download low violence depots when -app is used.");
+            Console.WriteLine("  -realm <realm>           - the Steam realm whose depots to download: steamglobal or steamchina (default: steamglobal)");
+            Console.WriteLine("  -all-realms              - download depots for every realm when -app is used.");
             Console.WriteLine();
             Console.WriteLine("  -ugc <#>                 - the UGC ID to download.");
             Console.WriteLine("  -pubfile <#>             - the PublishedFileId to download. (Will automatically resolve to UGC id)");
