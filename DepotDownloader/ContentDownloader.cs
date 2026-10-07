@@ -568,8 +568,9 @@ namespace DepotDownloader
                 // Depots that passed every filter except the realm check, kept so an
                 // app that only ships other-realm depots still downloads something.
                 var realmSkippedDepotIds = new List<uint>();
-                // Whether any depot explicitly tagged with the requested realm passed.
-                var requestedRealmMatched = false;
+                // Whether any of the app's own (non-shared) content depots passed
+                // every filter, tagged with the requested realm or untagged.
+                var ownContentDepotPassed = false;
 
                 if (depots != null)
                 {
@@ -638,9 +639,6 @@ namespace DepotDownloader
                                     continue;
                                 }
 
-                                if (depotConfig["realm"] != KeyValue.Invalid &&
-                                    !string.IsNullOrWhiteSpace(depotConfig["realm"].Value))
-                                    requestedRealmMatched = true;
                             }
                         }
 
@@ -648,13 +646,19 @@ namespace DepotDownloader
 
                         if (!hasSpecificDepots)
                             depotManifestIds.Add((id, INVALID_MANIFEST_ID));
+
+                        // Shared redistributables come from another app
+                        // (depotfromapp); they don't count as the game's content.
+                        if (depotSection["depotfromapp"] == KeyValue.Invalid)
+                            ownContentDepotPassed = true;
                     }
                 }
 
-                // Fall back only when the requested realm has no depots of its own
-                // (e.g. a China-only app). Realm-less depots such as shared content
-                // don't count: they'd otherwise mask a missing game depot.
-                if (!hasSpecificDepots && !requestedRealmMatched && realmSkippedDepotIds.Count > 0)
+                // Fall back only when nothing of the game's own content passed (e.g. a
+                // China-only app). If an untagged game depot passed, it IS the
+                // requested realm's content and the other-realm depots stay out,
+                // otherwise apps that tag only their China depot would mix again.
+                if (!hasSpecificDepots && !ownContentDepotPassed && realmSkippedDepotIds.Count > 0)
                 {
                     Console.WriteLine("No depots for realm '{0}'; using the {1} depot(s) from other realms instead.",
                         Config.Realm ?? DEFAULT_REALM, realmSkippedDepotIds.Count);
