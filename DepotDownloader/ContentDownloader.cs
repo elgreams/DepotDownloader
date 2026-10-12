@@ -513,6 +513,136 @@ namespace DepotDownloader
             File.Move(fileStagingPath, fileFinalPath);
         }
 
+        enum DepotFilterResult { Keep, Skip, RealmSkip }
+
+        // Whether a depot passes the OS/arch/language/low-violence/realm filters
+        // applied when downloading a whole app.
+        static DepotFilterResult FilterDepot(uint id, KeyValue depotSection, string os, string arch, string language, bool lv)
+        {
+            var depotConfig = depotSection["config"];
+            if (depotConfig == KeyValue.Invalid)
+                return DepotFilterResult.Keep;
+
+            if (!Config.DownloadAllPlatforms &&
+                depotConfig["oslist"] != KeyValue.Invalid &&
+                !string.IsNullOrWhiteSpace(depotConfig["oslist"].Value))
+            {
+                var oslist = depotConfig["oslist"].Value.Split(',');
+                if (Array.IndexOf(oslist, os ?? Util.GetSteamOS()) == -1)
+                    return DepotFilterResult.Skip;
+            }
+
+            if (!Config.DownloadAllArchs &&
+                depotConfig["osarch"] != KeyValue.Invalid &&
+                !string.IsNullOrWhiteSpace(depotConfig["osarch"].Value))
+            {
+                var depotArch = depotConfig["osarch"].Value;
+                if (depotArch != (arch ?? Util.GetSteamArch()))
+                    return DepotFilterResult.Skip;
+            }
+
+            if (!Config.DownloadAllLanguages &&
+                depotConfig["language"] != KeyValue.Invalid &&
+                !string.IsNullOrWhiteSpace(depotConfig["language"].Value))
+            {
+                var depotLang = depotConfig["language"].Value;
+                if (depotLang != (language ?? "english"))
+                    return DepotFilterResult.Skip;
+            }
+
+            if (!lv &&
+                depotConfig["lowviolence"] != KeyValue.Invalid &&
+                depotConfig["lowviolence"].AsBoolean())
+                return DepotFilterResult.Skip;
+
+            // Some apps ship a separate depot per Steam realm
+            // (e.g. a global and a Steam China Windows depot with
+            // the same oslist). The Steam client only installs its
+            // own realm's depots plus realm-less ones; without this
+            // check both were downloaded and merged.
+            if (!Config.DownloadAllRealms &&
+                depotConfig["realm"] != KeyValue.Invalid &&
+                !string.IsNullOrWhiteSpace(depotConfig["realm"].Value) &&
+                !string.Equals(depotConfig["realm"].Value, Config.Realm ?? DEFAULT_REALM, StringComparison.OrdinalIgnoreCase))
+            {
+                Console.WriteLine("Skipping depot {0}: realm '{1}' (downloading realm '{2}').",
+                    id, depotConfig["realm"].Value, Config.Realm ?? DEFAULT_REALM);
+                return DepotFilterResult.RealmSkip;
+            }
+
+            return DepotFilterResult.Keep;
+        }
+
+        // Some games (hasdepotsindlc) list a DLC's depots only under the DLC's own
+        // app, not under the game (Dagon 1481400: its DLC depots 1722010, 1751590
+        // and 2291520 appear only in those DLC apps). Steam and SteamCMD install
+        // them with the game; without this a whole-app download skipped them.
+        // Returns the extra depots (with the DLC app that lists them) that pass
+        // the same filters as the game's own depots. Ownership is checked later,
+        // per depot, like every other depot.
+        static async Task<List<(uint depotId, uint dlcAppId)>> FindDepotsInDlcApps(
+            uint appId, KeyValue depots, List<uint> depotIdsFound, string os, string arch, string language, bool lv)
+        {
+            var found = new List<(uint depotId, uint dlcAppId)>();
+
+            var extended = GetSteam3AppSection(appId, EAppInfoSection.Extended);
+            if (extended == null || extended["listofdlc"] == KeyValue.Invalid ||
+                string.IsNullOrWhiteSpace(extended["listofdlc"].Value))
+                return found;
+
+            var dlcAppIds = extended["listofdlc"].Value
+                .Split(',')
+                .Select(s => uint.TryParse(s.Trim(), out var id) ? id : INVALID_APP_ID)
+                .Where(id => id != INVALID_APP_ID && id != appId)
+                .Distinct()
+                .ToList();
+            if (dlcAppIds.Count == 0)
+                return found;
+
+            // Every depot the game lists itself, whether or not it passed the
+            // filters, so a DLC app that repeats one doesn't bring it back.
+            var gameDepotIds = new HashSet<uint>();
+            foreach (var section in depots.Children)
+            {
+                if (uint.TryParse(section.Name, out var id))
+                    gameDepotIds.Add(id);
+            }
+
+            await steam3.RequestAppInfos(dlcAppIds);
+
+            var seen = new HashSet<uint>(depotIdsFound);
+            foreach (var dlcAppId in dlcAppIds)
+            {
+                var dlcDepots = GetSteam3AppSection(dlcAppId, EAppInfoSection.Depots);
+                if (dlcDepots == null)
+                    continue;
+
+                foreach (var depotSection in dlcDepots.Children)
+                {
+                    if (depotSection.Children.Count == 0 || !uint.TryParse(depotSection.Name, out var id))
+                        continue;
+
+                    // Shared redistributables and depots the game already lists
+                    // come from the game's own pass.
+                    if (gameDepotIds.Contains(id) || depotSection["depotfromapp"] != KeyValue.Invalid)
+                        continue;
+
+                    // A DLC can't fall back to other realms: the game's content
+                    // decides the realm, so other-realm DLC depots stay skipped.
+                    if (FilterDepot(id, depotSection, os, arch, language, lv) != DepotFilterResult.Keep)
+                        continue;
+
+                    if (!seen.Add(id))
+                        continue;
+
+                    Console.WriteLine("Depot {0} is listed under DLC app {1}; adding it.", id, dlcAppId);
+                    found.Add((id, dlcAppId));
+                }
+            }
+
+            return found;
+        }
+
         public static async Task DownloadAppAsync(uint appId, List<(uint depotId, ulong manifestId)> depotManifestIds, string branch, string os, string arch, string language, bool lv, bool isUgc)
         {
             cdnPool = new CDNClientPool(steam3, appId);
@@ -547,6 +677,7 @@ namespace DepotDownloader
 
             var hasSpecificDepots = depotManifestIds.Count > 0;
             var depotIdsFound = new List<uint>();
+            var dlcDepots = new List<(uint depotId, uint dlcAppId)>();
             var depotIdsExpected = depotManifestIds.Select(x => x.depotId).ToList();
             var depots = GetSteam3AppSection(appId, EAppInfoSection.Depots);
 
@@ -588,58 +719,15 @@ namespace DepotDownloader
 
                         if (!hasSpecificDepots)
                         {
-                            var depotConfig = depotSection["config"];
-                            if (depotConfig != KeyValue.Invalid)
+                            var filter = FilterDepot(id, depotSection, os, arch, language, lv);
+                            if (filter == DepotFilterResult.RealmSkip)
                             {
-                                if (!Config.DownloadAllPlatforms &&
-                                    depotConfig["oslist"] != KeyValue.Invalid &&
-                                    !string.IsNullOrWhiteSpace(depotConfig["oslist"].Value))
-                                {
-                                    var oslist = depotConfig["oslist"].Value.Split(',');
-                                    if (Array.IndexOf(oslist, os ?? Util.GetSteamOS()) == -1)
-                                        continue;
-                                }
-
-                                if (!Config.DownloadAllArchs &&
-                                    depotConfig["osarch"] != KeyValue.Invalid &&
-                                    !string.IsNullOrWhiteSpace(depotConfig["osarch"].Value))
-                                {
-                                    var depotArch = depotConfig["osarch"].Value;
-                                    if (depotArch != (arch ?? Util.GetSteamArch()))
-                                        continue;
-                                }
-
-                                if (!Config.DownloadAllLanguages &&
-                                    depotConfig["language"] != KeyValue.Invalid &&
-                                    !string.IsNullOrWhiteSpace(depotConfig["language"].Value))
-                                {
-                                    var depotLang = depotConfig["language"].Value;
-                                    if (depotLang != (language ?? "english"))
-                                        continue;
-                                }
-
-                                if (!lv &&
-                                    depotConfig["lowviolence"] != KeyValue.Invalid &&
-                                    depotConfig["lowviolence"].AsBoolean())
-                                    continue;
-
-                                // Some apps ship a separate depot per Steam realm
-                                // (e.g. a global and a Steam China Windows depot with
-                                // the same oslist). The Steam client only installs its
-                                // own realm's depots plus realm-less ones; without this
-                                // check both were downloaded and merged.
-                                if (!Config.DownloadAllRealms &&
-                                    depotConfig["realm"] != KeyValue.Invalid &&
-                                    !string.IsNullOrWhiteSpace(depotConfig["realm"].Value) &&
-                                    !string.Equals(depotConfig["realm"].Value, Config.Realm ?? DEFAULT_REALM, StringComparison.OrdinalIgnoreCase))
-                                {
-                                    Console.WriteLine("Skipping depot {0}: realm '{1}' (downloading realm '{2}').",
-                                        id, depotConfig["realm"].Value, Config.Realm ?? DEFAULT_REALM);
-                                    realmSkippedDepotIds.Add(id);
-                                    continue;
-                                }
-
+                                realmSkippedDepotIds.Add(id);
+                                continue;
                             }
+
+                            if (filter == DepotFilterResult.Skip)
+                                continue;
                         }
 
                         depotIdsFound.Add(id);
@@ -679,6 +767,11 @@ namespace DepotDownloader
                     var remainingDepotIds = depotIdsExpected.Except(depotIdsFound);
                     throw new ContentDownloaderException(string.Format("Depot {0} not listed for app {1}", string.Join(", ", remainingDepotIds), appId));
                 }
+
+                if (!hasSpecificDepots && depots != null && depots["hasdepotsindlc"].AsBoolean())
+                {
+                    dlcDepots = await FindDepotsInDlcApps(appId, depots, depotIdsFound, os, arch, language, lv);
+                }
             }
 
             var infos = new List<DepotDownloadInfo>();
@@ -689,6 +782,24 @@ namespace DepotDownloader
                 if (info != null)
                 {
                     infos.Add(info);
+                }
+            }
+
+            if (dlcDepots.Count > 0)
+            {
+                var gameBuild = GetSteam3AppBuildNumber(appId, branch);
+                foreach (var (depotId, dlcAppId) in dlcDepots)
+                {
+                    // DLC apps rarely carry the game's betas. Take public quietly
+                    // when the DLC doesn't list the branch, rather than logging a
+                    // branch fallback (and trying the game's beta password on it).
+                    var dlcBranches = GetSteam3AppSection(dlcAppId, EAppInfoSection.Depots)?["branches"];
+                    var dlcBranch = dlcBranches != null && dlcBranches[branch] != KeyValue.Invalid ? branch : DEFAULT_BRANCH;
+                    var info = await GetDepotInfo(depotId, dlcAppId, INVALID_MANIFEST_ID, dlcBranch, gameBuild);
+                    if (info != null)
+                    {
+                        infos.Add(info);
+                    }
                 }
             }
 
@@ -705,7 +816,11 @@ namespace DepotDownloader
             }
         }
 
-        static async Task<DepotDownloadInfo> GetDepotInfo(uint depotId, uint appId, ulong manifestId, string branch)
+        // gameBuild is set only for a depot listed under a DLC app rather than the
+        // game (see FindDepotsInDlcApps). Its directory is then named after the
+        // game's build instead of the DLC's own, so every depot of one download
+        // shares a build number, and it always reports the DLC's appid.
+        static async Task<DepotDownloadInfo> GetDepotInfo(uint depotId, uint appId, ulong manifestId, string branch, uint? gameBuild = null)
         {
             if (steam3 != null && appId != INVALID_APP_ID)
             {
@@ -743,7 +858,7 @@ namespace DepotDownloader
                 return null;
             }
 
-            var uVersion = GetSteam3AppBuildNumber(appId, branch);
+            var uVersion = gameBuild ?? GetSteam3AppBuildNumber(appId, branch);
 
             if (!CreateDirectories(depotId, uVersion, out var installDir))
             {
@@ -764,6 +879,8 @@ namespace DepotDownloader
             }
 
             var dlcAppId = GetSteam3DepotDlcAppId(depotId, appId);
+            if (dlcAppId == INVALID_APP_ID && gameBuild != null)
+                dlcAppId = appId;
             var depotName = GetSteam3DepotName(depotId, appId);
 
             return new DepotDownloadInfo(depotId, containingAppId, manifestId, branch, installDir, depotKey, dlcAppId, depotName);

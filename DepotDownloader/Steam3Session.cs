@@ -183,6 +183,51 @@ namespace DepotDownloader
             }
         }
 
+        // Batched RequestAppInfo for apps not fetched yet (e.g. every DLC of a
+        // game), so a game with hundreds of DLC doesn't make two round trips each.
+        public async Task RequestAppInfos(IEnumerable<uint> appIds)
+        {
+            var pending = appIds.Distinct().Where(id => !AppInfo.ContainsKey(id)).ToList();
+
+            foreach (var chunk in pending.Chunk(100))
+            {
+                if (bAborted)
+                    return;
+
+                var appTokens = await steamApps.PICSGetAccessTokens(chunk, []);
+
+                foreach (var token_dict in appTokens.AppTokens)
+                {
+                    this.AppTokens[token_dict.Key] = token_dict.Value;
+                }
+
+                var requests = chunk.Select(appId =>
+                {
+                    var request = new SteamApps.PICSRequest(appId);
+                    if (AppTokens.TryGetValue(appId, out var token))
+                    {
+                        request.AccessToken = token;
+                    }
+                    return request;
+                }).ToList();
+
+                var appInfoMultiple = await steamApps.PICSGetProductInfo(requests, []);
+
+                foreach (var appInfo in appInfoMultiple.Results)
+                {
+                    foreach (var app_value in appInfo.Apps)
+                    {
+                        AppInfo[app_value.Value.ID] = app_value.Value;
+                    }
+
+                    foreach (var app in appInfo.UnknownApps)
+                    {
+                        AppInfo[app] = null;
+                    }
+                }
+            }
+        }
+
         public async Task RequestPackageInfo(IEnumerable<uint> packageIds)
         {
             var packages = packageIds.ToList();
